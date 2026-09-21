@@ -27,7 +27,8 @@ import {
     Tag,
     MessageCircleReply,
     Contact,
-    UserPlus
+    UserPlus,
+    GitBranch
 } from "lucide-react";
 import { useSidebar } from "./sidebar-context";
 import {
@@ -80,6 +81,7 @@ const navGroups: NavGroup[] = [
         items: [
             { href: "/dashboard/bot-settings", label: "Bot Settings", icon: Bot },
             { href: "/dashboard/autoreply", label: "Auto Reply", icon: MessageCircleReply },
+            { href: "/dashboard/workflows", label: "Workflows", icon: GitBranch },
             { href: "/dashboard/profile", label: "Bot Profile", icon: UserCircle },
             { href: "/dashboard/scheduler", label: "Scheduler", icon: CalendarClock },
             { href: "/dashboard/webhooks", label: "Webhooks & API", icon: Webhook },

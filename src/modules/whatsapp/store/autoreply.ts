@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { WASocket } from "@whiskeysockets/baileys";
 import { normalizeMessageContent } from "@whiskeysockets/baileys";
 import { logger } from "@/lib/logger";
+import { processWorkflows } from "./workflow-engine";
 
 // Helper for permission check (Deduplicate from command-handler if possible, but keep simple here)
 function canAutoReply(config: any, fromMe: boolean, senderJid: string): boolean {
@@ -107,6 +108,24 @@ export async function bindAutoReply(sock: WASocket, sessionId: string) {
             if (!text) continue;
 
             try {
+                // ─── Workflow Engine (Priority) ───────────────────
+                // Check workflows first — if one matches, skip simple auto-reply rules
+                const workflowHandled = await processWorkflows(
+                    sock,
+                    sessionId,
+                    session.id,
+                    msg,
+                    remoteJid,
+                    text,
+                    senderJid as string,
+                    isGroup
+                );
+
+                if (workflowHandled) {
+                    logger.info("AutoReply", `Workflow handled message for ${remoteJid}, skipping auto-reply rules`);
+                    continue;
+                }
+
                 // Fetch rules for this session
                 const rules = await prisma.autoReply.findMany({
                     where: {

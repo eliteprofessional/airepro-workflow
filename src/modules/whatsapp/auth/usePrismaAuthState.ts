@@ -3,7 +3,7 @@ import { AuthenticationCreds, AuthenticationState, BufferJSON, initAuthCreds, Si
 import { logger } from "@/lib/logger";
 
 export const usePrismaAuthState = async (sessionId: string): Promise<{ state: AuthenticationState, saveCreds: () => Promise<void> }> => {
-    
+
     // Helper to read JSON with Buffer handling
     const readData = async (type: string, id: string) => {
         try {
@@ -26,21 +26,21 @@ export const usePrismaAuthState = async (sessionId: string): Promise<{ state: Au
         try {
             const key = `${type}-${id}`;
             const value = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
-            
+
             await prisma.authState.upsert({
                 where: { sessionId_key: { sessionId, key } },
                 create: { sessionId, key, value },
                 update: { value }
             });
         } catch (error) {
-             logger.error("Auth", 'Error writing auth state:', error);
+            logger.error("Auth", 'Error writing auth state:', error);
         }
     };
 
     const removeData = async (type: string, id: string) => {
         try {
             const key = `${type}-${id}`;
-             await prisma.authState.deleteMany({
+            await prisma.authState.deleteMany({
                 where: { sessionId, key }
             });
         } catch (error) {
@@ -69,14 +69,14 @@ export const usePrismaAuthState = async (sessionId: string): Promise<{ state: Au
                     return data;
                 },
                 set: async (data) => {
-                     const tasks: Promise<void>[] = [];
+                    const tasks: Promise<void>[] = [];
                     for (const category in data) {
                         const categoryData = data[category as keyof typeof data];
                         if (!categoryData) continue;
-                        
+
                         for (const id in categoryData) {
                             const value = categoryData[id];
-                             if (value) {
+                            if (value) {
                                 tasks.push(writeData(category, id, value));
                             } else {
                                 tasks.push(removeData(category, id));

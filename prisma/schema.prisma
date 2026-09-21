@@ -67,6 +67,7 @@ model Session {
   messages    Message[]
   groups      Group[]
   autoReplies AutoReply[]
+  workflows   Workflow[]
   stories     Story[]
   scheduledMessages ScheduledMessage[]
   webhooks    Webhook[]
@@ -389,4 +390,23 @@ model BroadcastRecipient {
   broadcastLog    BroadcastLog @relation(fields: [broadcastLogId], references: [id], onDelete: Cascade)
 
   @@index([broadcastLogId])
+}
+
+model Workflow {
+  id           String   @id @default(cuid())
+  sessionId    String
+  name         String
+  description  String?
+  nodes        Json     // Array of node definitions with positions, types, config
+  edges        Json     // Array of connections between nodes (sourceId -> targetId)
+  isActive     Boolean  @default(true)
+  triggerType  String   @default("KEYWORD")  // KEYWORD, CONTAINS, REGEX, ALL_MESSAGES
+  triggerValue String?  // The keyword/pattern to match
+  audience     String   @default("ALL")      // ALL, PRIVATE, GROUP
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  session      Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
 }
