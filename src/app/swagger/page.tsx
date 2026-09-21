@@ -39,8 +39,8 @@ export default function ApiDocsPage() {
         e.preventDefault();
 
         // Basic auth - compare with env variables or hardcoded (for demo)
-        const validUsername = process.env.NEXT_PUBLIC_SWAGGER_USERNAME || "admin";
-        const validPassword = process.env.NEXT_PUBLIC_SWAGGER_PASSWORD || "admin123";
+        const validUsername = process.env.NEXT_PUBLIC_SWAGGER_USERNAME || "workflow";
+        const validPassword = process.env.NEXT_PUBLIC_SWAGGER_PASSWORD || "password";
 
         if (username === validUsername && password === validPassword) {
             sessionStorage.setItem("swagger_auth", "true");
@@ -125,8 +125,8 @@ export default function ApiDocsPage() {
                     <div className="mt-6 text-center text-sm text-gray-500">
                         <p>Default credentials:</p>
                         <p className="font-mono mt-1">
-                            Username: <span className="font-semibold">admin</span> |
-                            Password: <span className="font-semibold">admin123</span>
+                            Username: <span className="font-semibold">workflow</span> |
+                            Password: <span className="font-semibold">password</span>
                         </p>
                     </div>
                 </div>

@@ -10,6 +10,12 @@ RUN npm ci --legacy-peer-deps && npm cache clean --force
 
 # Source & build
 COPY . .
+# Next.js static generation may call Prisma; provide placeholder build-time env
+# (runtime DATABASE_URL comes from the mounted .env / compose env-file).
+ENV DATABASE_URL="mysql://build:build@127.0.0.1:3306/build"
+ENV AUTH_SECRET="build-time-auth-secret-not-used-at-runtime"
+ENV NEXT_PUBLIC_APP_URL="https://workflow.airepro.in"
+ENV NEXT_PUBLIC_API_URL="https://workflow.airepro.in/api"
 RUN npx prisma generate && npm run build
 
 # Strip devDeps from node_modules after build

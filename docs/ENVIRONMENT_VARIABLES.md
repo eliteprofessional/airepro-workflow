@@ -56,8 +56,8 @@ Interactive OpenAPI / Swagger documentation page settings.
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `NEXT_PUBLIC_SWAGGER_ENABLED` | boolean | `true` | Toggle public access to the interactive API documentation at `/docs`. |
-| `NEXT_PUBLIC_SWAGGER_USERNAME` | string | `admin` | Basic auth username required to view the `/docs` page. |
-| `NEXT_PUBLIC_SWAGGER_PASSWORD` | string | `admin123` | Basic auth password. **Wajib diubah di server production!** |
+| `NEXT_PUBLIC_SWAGGER_USERNAME` | string | `workflow` | Basic auth username required to view the `/swagger` page. |
+| `NEXT_PUBLIC_SWAGGER_PASSWORD` | string | `password` | Basic auth password. **Change this on production!** |
 
 ---
 
@@ -101,8 +101,8 @@ Rate limiting parameters and upload size thresholds.
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `TZ` | string | `Asia/Jakarta` | Timezone database string (e.g. `Asia/Jakarta`, `UTC`) for cron campaigns. |
-| `LOCALE` | string | `id-ID` | Preferred locale for formatting dates and numbers. |
+| `TZ` | string | `Asia/Kolkata` | Timezone database string (e.g. `Asia/Kolkata`, `UTC`) for cron campaigns. India Standard Time (IST, UTC+5:30). |
+| `LOCALE` | string | `en-IN` | Preferred locale for formatting dates and numbers (Indian English). |
 | `MEDIA_STORAGE_PATH` | string | `uploads` | Directory folder (relative to project root) where downloaded media attachments are stored. |
 | `NEXT_PUBLIC_GA_ID` | string | — | Google Analytics tracking ID. |
 

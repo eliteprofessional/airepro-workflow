@@ -18,9 +18,14 @@ async function main() {
 
     if (existingUser) {
         console.log(`User ${email} found. Promoting to SUPERADMIN...`);
+        const data = { role: 'SUPERADMIN' };
+        if (password) {
+            data.password = await bcrypt.hash(password, 10);
+            console.log("Updating password...");
+        }
         await prisma.user.update({
             where: { email },
-            data: { role: 'SUPERADMIN' }
+            data
         });
         console.log("User promoted successfully!");
     } else {
