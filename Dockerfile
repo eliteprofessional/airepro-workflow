@@ -31,8 +31,8 @@ COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/scripts ./scripts
 
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=1730
 ENV HOSTNAME=0.0.0.0
-EXPOSE 3000
+EXPOSE 1730
 
 CMD ["sh", "-c", "npx prisma db push && (if [ -n \"$ADMIN_EMAIL\" ] && [ -n \"$ADMIN_PASSWORD\" ]; then node scripts/setup-admin.js \"$ADMIN_EMAIL\" \"$ADMIN_PASSWORD\"; fi) && node node_modules/tsx/dist/cli.mjs src/server/index.ts"]

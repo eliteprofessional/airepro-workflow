@@ -1,57 +1,32 @@
-version: '3.8'
+# Airepro Workflow (WA-AKG) — production deploy compose (Jenkins + Cloudflare Tunnel).
+#
+# Jenkins (same host as Cloudflare Tunnel):
+#   WORKFLOW_IMAGE_TAG=$BUILD_NUMBER \
+#   WORKFLOW_ENV_FILE=/var/www/workflow-backends/workflow/.env \
+#   WORKFLOW_UPLOADS_DIR=/var/lib/workflow/uploads \
+#   docker compose up -d --no-build --force-recreate
+#
+# NOTE: image tag var is WORKFLOW_IMAGE_TAG, not BUILD_TAG —
+# Jenkins defines BUILD_TAG itself and compose would silently override the tag.
+#
+# Local all-in-one (MySQL + app): docker compose -f docker-compose.local.yml up -d
 
 services:
-  db:
-    image: mysql:8.0
-    container_name: wa-akg-db
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-wa_akg}
-    ports:
-      - "3307:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: wa-akg-app
-    restart: always
-    ports:
-      - "3000:3000"
+    image: workflow-app:${WORKFLOW_IMAGE_TAG:-latest}
+    container_name: workflow-app
+    restart: unless-stopped
     environment:
-      - DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@db:3306/${MYSQL_DATABASE:-wa_akg}
-      - AUTH_SECRET=${AUTH_SECRET}
-      - BASE_URL=${BASE_URL:-http://localhost:3000}
-      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
-      - NODE_ENV=production
-      - PORT=${PORT:-3000}
-      - HOSTNAME=0.0.0.0
-      - NEXT_PUBLIC_APP_URL=${BASE_URL:-http://localhost:3000}
-      - NEXT_PUBLIC_API_URL=${BASE_URL:-http://localhost:3000}/api
-      - BAILEYS_LOG_LEVEL=${BAILEYS_LOG_LEVEL:-error}
-      - NEXT_PUBLIC_SWAGGER_USERNAME=${NEXT_PUBLIC_SWAGGER_USERNAME:-admin}
-      - NEXT_PUBLIC_SWAGGER_PASSWORD=${NEXT_PUBLIC_SWAGGER_PASSWORD}
-      - NEXT_PUBLIC_SWAGGER_ENABLED=${NEXT_PUBLIC_SWAGGER_ENABLED:-true}
-      - TZ=${TZ:-Asia/Jakarta}
-      - LOCALE=${LOCALE:-id-ID}
-      - ADMIN_EMAIL=${ADMIN_EMAIL}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-    depends_on:
-      db:
-        condition: service_healthy
+      PORT: "1730"
+      HOSTNAME: "0.0.0.0"
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:1730:1730"
     volumes:
-      - app_data:/app/data
-      - uploads_data:/app/uploads
+      - ${WORKFLOW_ENV_FILE:-./.env}:/app/.env:ro
+      - ${WORKFLOW_UPLOADS_DIR:-workflow_uploads}:/app/uploads
+      - workflow_data:/app/data
 
 volumes:
-  mysql_data:
-  app_data:
-  uploads_data:
+  workflow_uploads:
+  workflow_data:

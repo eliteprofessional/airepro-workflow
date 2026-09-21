@@ -1,0 +1,7 @@
+{
+  "slug": "workflow",
+  "frontend_port": 1730,
+  "backend_port": 1730,
+  "domain": "workflow.airepro.in",
+  "backend_domain": "workflow-s.airepro.in"
+}
