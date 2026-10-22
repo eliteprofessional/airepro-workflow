@@ -25,7 +25,7 @@ services:
     container_name: wa-akg-app
     restart: always
     ports:
-      - "3000:3000"
+      - "3000:${PORT:-3000}"
     environment:
       - DATABASE_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@db:3306/${MYSQL_DATABASE:-wa_akg}
       - AUTH_SECRET=${AUTH_SECRET}
