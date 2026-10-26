@@ -83,7 +83,9 @@ interface MetaBulkJob {
     to: string;
     type: string;
     status: string;
-    error?: string;
+    deliveryStatus?: string;
+    metaMessageId?: string | null;
+    error?: string | null;
 }
 
 interface MetaBulkResponse {
@@ -102,7 +104,12 @@ export interface MetaTemplate {
     language?: string;
     status?: string;
     body?: string;
-    placeholders?: string[];
+    header?: { text?: string; type?: string } | null;
+    footer?: string | null;
+    placeholders?: (
+        | { key?: string; label?: string; sample?: string }
+        | string
+    )[];
     metaTemplateId?: string;
 }
 
@@ -180,6 +187,51 @@ export default function BroadcastPage() {
         } catch {}
         fetchTemplates(DEFAULT_META_API_KEY);
     }, [fetchTemplates]);
+
+    // Poll real-time delivery status of Meta jobs
+    useEffect(() => {
+        if (!metaResponse || !metaResponse.jobs || metaResponse.jobs.length === 0) return;
+
+        const hasPending = metaResponse.jobs.some(
+            (j) => j.status === "queued" || !j.deliveryStatus
+        );
+        if (!hasPending) return;
+
+        const timer = setTimeout(async () => {
+            try {
+                const updatedJobs = await Promise.all(
+                    metaResponse.jobs!.map(async (j) => {
+                        if (j.status !== "queued" && j.deliveryStatus) return j;
+                        try {
+                            const res = await fetch(
+                                `/api/broadcast/meta/status/${j.jobId}?apiKey=${encodeURIComponent(metaApiKey.trim())}`
+                            );
+                            if (res.ok) {
+                                const resJson = await res.json();
+                                const item = resJson.data;
+                                if (item) {
+                                    return {
+                                        ...j,
+                                        status: item.status || j.status,
+                                        deliveryStatus: item.deliveryStatus,
+                                        metaMessageId: item.metaMessageId,
+                                        error: item.error
+                                    };
+                                }
+                            }
+                        } catch {}
+                        return j;
+                    })
+                );
+
+                setMetaResponse((prev) => (prev ? { ...prev, jobs: updatedJobs } : prev));
+            } catch (e) {
+                console.error("Failed to poll Meta job status:", e);
+            }
+        }, 2000);
+
+        return () => clearTimeout(timer);
+    }, [metaResponse, metaApiKey]);
 
     const handleSaveApiKey = () => {
         if (!metaApiKey.trim()) {
@@ -374,6 +426,9 @@ export default function BroadcastPage() {
                         type: "template",
                         templateName: selectedTemplate?.name || selectedTemplateName,
                         templateId: selectedTemplate?.id,
+                        templateBody: selectedTemplate?.body,
+                        headerText: selectedTemplate?.header?.text,
+                        footerText: selectedTemplate?.footer || undefined,
                         language: selectedTemplate?.language || "en",
                         placeholders: globalPlaceholders,
                         apiKey: metaApiKey.trim(),
@@ -474,6 +529,24 @@ export default function BroadcastPage() {
     const recipientCount = recipientNumbers.length;
 
     const selectedTemplate = templates.find((t) => t.name === selectedTemplateName) || null;
+
+    const renderTemplatePreview = (
+        template: MetaTemplate | null,
+        placeholdersStr: string
+    ) => {
+        if (!template || !template.body) return "";
+        const parts = placeholdersStr.split(",").map((s) => s.trim()).filter(Boolean);
+        let res = template.body;
+        parts.forEach((val, idx) => {
+            res = res.replaceAll(`{{${idx + 1}}}`, val);
+        });
+
+        let full = "";
+        if (template.header?.text) full += `${template.header.text}\n\n`;
+        full += res;
+        if (template.footer) full += `\n\n_${template.footer}_`;
+        return full;
+    };
 
     const formatJid = (jid: string) => {
         if (!jid) return "-";
@@ -889,12 +962,28 @@ export default function BroadcastPage() {
                                                     </div>
                                                 )}
 
+                                                {selectedTemplate.placeholders && selectedTemplate.placeholders.length > 0 && (
+                                                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                                        <span className="text-[10px] text-muted-foreground font-semibold">Parameters:</span>
+                                                        {selectedTemplate.placeholders.map((ph, idx) => {
+                                                            const label = typeof ph === "string" ? ph : ph.label || ph.key || `${idx + 1}`;
+                                                            const sample = typeof ph === "object" && ph.sample ? ` (e.g. ${ph.sample})` : "";
+                                                            return (
+                                                                <Badge key={idx} variant="outline" className="text-[10px] bg-background">
+                                                                    <code className="font-mono text-emerald-600 dark:text-emerald-400 font-semibold mr-1">{"{{" + (idx + 1) + "}}"}</code>
+                                                                    {label}{sample}
+                                                                </Badge>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+
                                                 <div className="space-y-1.5 pt-1">
                                                     <Label className="text-[11px] font-semibold text-muted-foreground">
                                                         Default Placeholders / Variables (Optional)
                                                     </Label>
                                                     <Input
-                                                        placeholder="e.g. 482910, 10"
+                                                        placeholder="e.g. 482910, 5"
                                                         value={placeholdersInput}
                                                         onChange={(e) => setPlaceholdersInput(e.target.value)}
                                                         className="text-xs font-mono h-8"
@@ -903,15 +992,27 @@ export default function BroadcastPage() {
                                                         Fills <code className="font-mono font-semibold">{"{{1}}"}</code>, <code className="font-mono font-semibold">{"{{2}}"}</code> etc. in template body. You can also specify per recipient in the left box.
                                                     </p>
                                                 </div>
+
+                                                {selectedTemplate.body && (
+                                                    <div className="space-y-1 pt-1.5">
+                                                        <Label className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                                            <Eye className="h-3 w-3" />
+                                                            Live Rendered Preview (What Recipient Receives)
+                                                        </Label>
+                                                        <div className="p-2.5 rounded-md bg-emerald-500/5 border border-emerald-500/20 text-xs text-foreground/95 font-sans leading-relaxed whitespace-pre-wrap">
+                                                            {renderTemplatePreview(selectedTemplate, placeholdersInput)}
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
 
                                         <div className="p-3 rounded-lg border border-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-950/20 text-xs space-y-1">
                                             <div className="font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                                                <Zap className="h-4 w-4" /> Meta Bulk Template Dispatcher
+                                                <Zap className="h-4 w-4" /> Custom Template Auto-Replacement
                                             </div>
                                             <p className="text-muted-foreground">
-                                                Dispatches via <code className="font-mono">/api/v1/messages/bulk-template</code>. No session needed.
+                                                Placeholders are replaced in the template body and dispatched as high-speed raw messages to ensure instant delivery.
                                             </p>
                                         </div>
 
@@ -1072,29 +1173,62 @@ export default function BroadcastPage() {
                                 {/* Jobs breakdown */}
                                 {metaResponse.jobs && metaResponse.jobs.length > 0 && (
                                     <div className="space-y-2">
-                                        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                            Queued Jobs ({metaResponse.jobs.length})
-                                        </h4>
-                                        <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg border bg-background/50 p-2">
-                                            {metaResponse.jobs.map((job, idx) => (
-                                                <div
-                                                    key={job.jobId || idx}
-                                                    className="flex items-center justify-between text-xs py-1.5 px-2 rounded hover:bg-muted/40 font-mono"
-                                                >
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-emerald-500">●</span>
-                                                        <span className="font-semibold">{job.to}</span>
+                                        <div className="flex items-center justify-between">
+                                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                                Message Status ({metaResponse.jobs.length})
+                                            </h4>
+                                            <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                                                <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
+                                                Live sync with Meta
+                                            </span>
+                                        </div>
+                                        <div className="max-h-56 overflow-y-auto space-y-1.5 rounded-lg border bg-background/50 p-2">
+                                            {metaResponse.jobs.map((job, idx) => {
+                                                const isFailed = job.status === "failed" || job.deliveryStatus === "failed";
+                                                const isSent = job.status === "completed" || job.deliveryStatus === "sent";
+                                                return (
+                                                    <div
+                                                        key={job.jobId || idx}
+                                                        className="flex flex-col gap-1 text-xs py-2 px-2.5 rounded-md hover:bg-muted/40 font-mono border bg-card/60"
+                                                    >
+                                                        <div className="flex items-center justify-between">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className={isFailed ? "text-red-500" : isSent ? "text-emerald-500" : "text-amber-500"}>
+                                                                    ●
+                                                                </span>
+                                                                <span className="font-semibold text-foreground">{job.to}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-muted-foreground text-[10px] truncate max-w-[100px]">
+                                                                    {job.jobId}
+                                                                </span>
+                                                                <Badge
+                                                                    variant="outline"
+                                                                    className={`text-[10px] uppercase font-semibold ${
+                                                                        isFailed
+                                                                            ? "text-red-600 border-red-500/40 bg-red-500/10"
+                                                                            : isSent
+                                                                            ? "text-emerald-600 border-emerald-500/40 bg-emerald-500/10"
+                                                                            : "text-amber-600 border-amber-500/40 bg-amber-500/10"
+                                                                    }`}
+                                                                >
+                                                                    {isFailed ? "Failed" : isSent ? "Sent" : job.status}
+                                                                </Badge>
+                                                            </div>
+                                                        </div>
+                                                        {job.error && (
+                                                            <div className="text-[11px] text-red-500 font-sans bg-red-500/10 p-1.5 rounded border border-red-500/20 mt-0.5">
+                                                                {job.error}
+                                                            </div>
+                                                        )}
+                                                        {job.metaMessageId && (
+                                                            <div className="text-[10px] text-muted-foreground font-mono truncate">
+                                                                ID: {job.metaMessageId}
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-muted-foreground text-[11px] truncate max-w-[120px]">
-                                                            {job.jobId}
-                                                        </span>
-                                                        <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-500/30">
-                                                            {job.status}
-                                                        </Badge>
-                                                    </div>
-                                                </div>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     </div>
                                 )}

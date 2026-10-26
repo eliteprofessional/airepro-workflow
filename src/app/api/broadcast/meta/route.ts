@@ -17,11 +17,37 @@ const metaBroadcastSchema = z.object({
     message: z.string().optional(),
     templateId: z.union([z.number(), z.string()]).optional(),
     templateName: z.string().optional(),
+    templateBody: z.string().optional(),
+    headerText: z.string().optional(),
+    footerText: z.string().optional(),
     language: z.string().optional(),
     placeholders: z.array(z.string()).optional(),
     apiKey: z.string().min(1, "Meta API key is required"),
     sessionId: z.string().optional()
 });
+
+function renderTemplateWithPlaceholders(
+    body: string,
+    placeholders: string[],
+    header?: string,
+    footer?: string
+): string {
+    let result = body;
+    placeholders.forEach((val, idx) => {
+        const key = String(idx + 1);
+        result = result.replaceAll(`{{${key}}}`, val);
+    });
+
+    let fullText = "";
+    if (header && header.trim()) {
+        fullText += `${header.trim()}\n\n`;
+    }
+    fullText += result.trim();
+    if (footer && footer.trim()) {
+        fullText += `\n\n_${footer.trim()}_`;
+    }
+    return fullText;
+}
 
 export async function POST(request: NextRequest) {
     try {
@@ -48,26 +74,32 @@ export async function POST(request: NextRequest) {
             message,
             templateId,
             templateName,
-            language,
+            templateBody,
+            headerText,
+            footerText,
             placeholders,
             apiKey,
             sessionId
         } = parseResult.data;
 
         // Clean & normalize recipient records
+        const defaultPlaceholders = placeholders || [];
         const normalizedRecipients: { to: string; placeholders: string[] }[] = [];
+
         for (const item of recipients) {
             if (typeof item === "string") {
                 const cleanNum = item.replace(/@.*$/, "").replace(/[^0-9]/g, "").trim();
                 if (cleanNum.length >= 7) {
-                    normalizedRecipients.push({ to: cleanNum, placeholders: placeholders || [] });
+                    normalizedRecipients.push({ to: cleanNum, placeholders: defaultPlaceholders });
                 }
             } else if (item && typeof item === "object") {
                 const cleanNum = (item.to || "").replace(/@.*$/, "").replace(/[^0-9]/g, "").trim();
                 if (cleanNum.length >= 7) {
                     normalizedRecipients.push({
                         to: cleanNum,
-                        placeholders: item.placeholders || placeholders || []
+                        placeholders: item.placeholders && item.placeholders.length > 0
+                            ? item.placeholders
+                            : defaultPlaceholders
                     });
                 }
             }
@@ -82,80 +114,113 @@ export async function POST(request: NextRequest) {
 
         const cleanPhoneNumbers = normalizedRecipients.map((r) => r.to);
 
-        let data: any = null;
+        let totalAccepted = 0;
+        const allJobs: any[] = [];
         let logMessageTitle = "";
 
         if (type === "template") {
-            if (!templateName && !templateId) {
+            // Template mode: Replace placeholders in template body and dispatch as raw messages
+            let resolvedBody = (templateBody || message || "").trim();
+            let resolvedHeader = (headerText || "").trim();
+            let resolvedFooter = (footerText || "").trim();
+
+            if (!resolvedBody) {
+                // Fetch template definition from templates endpoint if body wasn't passed directly
+                try {
+                    const tplRes = await fetch("https://whatsapp.airepro.in/api/v1/templates", {
+                        headers: { "x-api-key": apiKey.trim() }
+                    });
+                    const tplJson = await tplRes.json();
+                    if (Array.isArray(tplJson?.templates)) {
+                        const found = tplJson.templates.find((t: any) =>
+                            (templateId !== undefined && String(t.id) === String(templateId)) ||
+                            (templateName && t.name === templateName)
+                        );
+                        if (found?.body) {
+                            resolvedBody = found.body;
+                            if (found.header?.text) resolvedHeader = found.header.text;
+                            if (found.footer) resolvedFooter = found.footer;
+                        }
+                    }
+                } catch (e) {
+                    console.error("Failed to fetch template body from API:", e);
+                }
+            }
+
+            if (!resolvedBody) {
                 return NextResponse.json(
-                    { status: false, message: "Template name or ID is required for template broadcast" },
+                    { status: false, message: "Template body could not be found or is empty" },
                     { status: 400 }
                 );
             }
 
-            logMessageTitle = `[Meta Template: ${templateName || templateId}]`;
+            logMessageTitle = `[Custom Template: ${templateName || templateId || "Message"}]`;
 
-            // Prepare payload according to Meta Bulk Template API
-            const bulkTemplatePayload: Record<string, any> = {
-                recipients: normalizedRecipients
-            };
-            if (templateId !== undefined && templateId !== null && String(templateId).trim() !== "") {
-                const numId = Number(templateId);
-                bulkTemplatePayload.templateId = isNaN(numId) ? templateId : numId;
+            // Group recipients by their rendered message body
+            const messageGroups = new Map<string, string[]>();
+            for (const r of normalizedRecipients) {
+                const rendered = renderTemplateWithPlaceholders(
+                    resolvedBody,
+                    r.placeholders,
+                    resolvedHeader,
+                    resolvedFooter
+                );
+                if (!messageGroups.has(rendered)) {
+                    messageGroups.set(rendered, []);
+                }
+                messageGroups.get(rendered)!.push(r.to);
             }
-            if (templateName) {
-                bulkTemplatePayload.templateName = templateName;
-            }
 
-            // 1. Try primary Endpoint: POST https://whatsapp.airepro.in/api/v1/messages/bulk-template
-            let response = await fetch("https://whatsapp.airepro.in/api/v1/messages/bulk-template", {
-                method: "POST",
-                headers: {
-                    "x-api-key": apiKey.trim(),
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(bulkTemplatePayload)
-            });
-
-            // 2. If bulk-template endpoint is not implemented on server (404), fallback to standard bulk with template type
-            if (response.status === 404) {
-                const fallbackPayload = {
-                    recipients: cleanPhoneNumbers,
-                    type: "template",
-                    template: {
-                        name: templateName,
-                        language: {
-                            code: language || "en"
-                        }
-                    }
-                };
-                response = await fetch("https://whatsapp.airepro.in/api/v1/messages/bulk", {
+            // Dispatch each distinct rendered message group via Meta bulk text endpoint
+            for (const [renderedText, toList] of messageGroups.entries()) {
+                const response = await fetch("https://whatsapp.airepro.in/api/v1/messages/bulk", {
                     method: "POST",
                     headers: {
                         "x-api-key": apiKey.trim(),
                         "Content-Type": "application/json"
                     },
-                    body: JSON.stringify(fallbackPayload)
+                    body: JSON.stringify({
+                        recipients: toList,
+                        type: "text",
+                        text: {
+                            body: renderedText
+                        }
+                    })
                 });
-            }
 
-            data = await response.json().catch(() => null);
+                const data = await response.json().catch(() => null);
 
-            if (!response.ok || (data && (data.success === false || data.ok === false))) {
-                const errorMsg =
-                    data?.error || data?.message || `Meta Template API error with status ${response.status}`;
-                return NextResponse.json(
-                    {
-                        status: false,
-                        message: errorMsg,
-                        error: errorMsg,
-                        details: data
-                    },
-                    { status: response.status >= 400 && response.status < 500 ? response.status : 400 }
-                );
+                if (!response.ok || (data && (data.success === false || data.ok === false))) {
+                    console.error("Meta group send error:", data);
+                    // Mark as failed jobs for this group
+                    toList.forEach((num) => {
+                        allJobs.push({
+                            jobId: "err_" + Date.now(),
+                            to: num,
+                            type: "text",
+                            status: "failed",
+                            error: data?.error || data?.message || "Send failed"
+                        });
+                    });
+                } else {
+                    const count = typeof data?.accepted === "number" ? data.accepted : toList.length;
+                    totalAccepted += count;
+                    if (Array.isArray(data?.jobs)) {
+                        allJobs.push(...data.jobs);
+                    } else {
+                        toList.forEach((num) => {
+                            allJobs.push({
+                                jobId: "job_" + Math.random().toString(36).substring(2, 10),
+                                to: num,
+                                type: "text",
+                                status: "queued"
+                            });
+                        });
+                    }
+                }
             }
         } else {
-            // Text broadcast mode
+            // Plain text broadcast mode
             if (!message || !message.trim()) {
                 return NextResponse.json(
                     { status: false, message: "Message content cannot be empty" },
@@ -163,15 +228,7 @@ export async function POST(request: NextRequest) {
                 );
             }
 
-            logMessageTitle = `[Meta Bulk] ${message}`;
-
-            const metaPayload = {
-                recipients: cleanPhoneNumbers,
-                type: "text",
-                text: {
-                    body: message.trim()
-                }
-            };
+            logMessageTitle = `[Meta Bulk] ${message.trim()}`;
 
             const response = await fetch("https://whatsapp.airepro.in/api/v1/messages/bulk", {
                 method: "POST",
@@ -179,23 +236,29 @@ export async function POST(request: NextRequest) {
                     "x-api-key": apiKey.trim(),
                     "Content-Type": "application/json"
                 },
-                body: JSON.stringify(metaPayload)
+                body: JSON.stringify({
+                    recipients: cleanPhoneNumbers,
+                    type: "text",
+                    text: {
+                        body: message.trim()
+                    }
+                })
             });
 
-            data = await response.json().catch(() => null);
+            const data = await response.json().catch(() => null);
 
             if (!response.ok || (data && (data.success === false || data.ok === false))) {
                 const errorMsg =
                     data?.error || data?.message || `Meta API error with status ${response.status}`;
                 return NextResponse.json(
-                    {
-                        status: false,
-                        message: errorMsg,
-                        error: errorMsg,
-                        details: data
-                    },
+                    { status: false, message: errorMsg, error: errorMsg, details: data },
                     { status: response.status >= 400 && response.status < 500 ? response.status : 400 }
                 );
+            }
+
+            totalAccepted = typeof data?.accepted === "number" ? data.accepted : cleanPhoneNumbers.length;
+            if (Array.isArray(data?.jobs)) {
+                allJobs.push(...data.jobs);
             }
         }
 
@@ -203,21 +266,9 @@ export async function POST(request: NextRequest) {
         const targetSessionId = sessionId || "meta-api";
 
         try {
-            const acceptedCount =
-                typeof data?.accepted === "number"
-                    ? data.accepted
-                    : typeof data?.successful === "number"
-                    ? data.successful
-                    : cleanPhoneNumbers.length;
-            const failedCount = Math.max(0, cleanPhoneNumbers.length - acceptedCount);
-
-            const jobs = Array.isArray(data?.jobs)
-                ? data.jobs
-                : Array.isArray(data?.results)
-                ? data.results
-                : [];
+            const failedCount = Math.max(0, cleanPhoneNumbers.length - totalAccepted);
             const jobMap = new Map<string, any>();
-            for (const j of jobs) {
+            for (const j of allJobs) {
                 if (j.to) jobMap.set(String(j.to), j);
             }
 
@@ -226,7 +277,7 @@ export async function POST(request: NextRequest) {
                     sessionId: targetSessionId,
                     message: logMessageTitle,
                     total: cleanPhoneNumbers.length,
-                    sent: acceptedCount,
+                    sent: totalAccepted,
                     failed: failedCount,
                     status: "completed",
                     delay: 0,
@@ -254,7 +305,7 @@ export async function POST(request: NextRequest) {
                     broadcastId: log.id,
                     status: "completed",
                     total: cleanPhoneNumbers.length,
-                    sent: acceptedCount,
+                    sent: totalAccepted,
                     failed: failedCount,
                     progress: 100,
                     completedAt: new Date().toISOString()
@@ -264,16 +315,17 @@ export async function POST(request: NextRequest) {
             console.error("Failed to save Meta broadcast log to DB:", dbErr);
         }
 
-        const acceptedCount =
-            data?.accepted ?? data?.successful ?? cleanPhoneNumbers.length;
-
         return NextResponse.json({
             status: true,
             success: true,
-            message: `Template broadcast queued via Meta API (${acceptedCount} recipients accepted)`,
+            message: `Messages dispatched via Meta API (${totalAccepted} queued/sent)`,
             data: {
-                ...data,
-                broadcastId
+                success: true,
+                accepted: totalAccepted,
+                status: "queued",
+                jobs: allJobs,
+                broadcastId,
+                timestamp: new Date().toISOString()
             }
         });
     } catch (e: any) {
