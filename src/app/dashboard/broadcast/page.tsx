@@ -11,6 +11,13 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue
+} from "@/components/ui/select";
+import {
     RefreshCw,
     Send,
     CheckCircle2,
@@ -27,7 +34,9 @@ import {
     Zap,
     ExternalLink,
     Info,
-    Save
+    Save,
+    FileText,
+    Layers
 } from "lucide-react";
 import { toast } from "sonner";
 import { useSession } from "@/components/dashboard/session-provider";
@@ -86,6 +95,17 @@ interface MetaBulkResponse {
     broadcastId?: string;
 }
 
+export interface MetaTemplate {
+    id?: number | string;
+    name: string;
+    category?: string;
+    language?: string;
+    status?: string;
+    body?: string;
+    placeholders?: string[];
+    metaTemplateId?: string;
+}
+
 const DEFAULT_META_API_KEY = "wak_599875_41f4cd35e8593640262935b9ecfe623114b9d70a36e63443";
 
 export default function BroadcastPage() {
@@ -97,20 +117,14 @@ export default function BroadcastPage() {
     const [keySaved, setKeySaved] = useState(false);
     const [metaResponse, setMetaResponse] = useState<MetaBulkResponse | null>(null);
 
-    const handleSaveApiKey = () => {
-        if (!metaApiKey.trim()) {
-            return toast.error("Please enter a token before saving");
-        }
-        try {
-            localStorage.setItem("meta_broadcast_api_key", metaApiKey.trim());
-            setKeySaved(true);
-            toast.success("Meta API token saved successfully!");
-            setTimeout(() => setKeySaved(false), 2500);
-        } catch {
-            toast.error("Failed to save token to browser storage");
-        }
-    };
+    // Meta Templates State
+    const [metaMessageType, setMetaMessageType] = useState<"template" | "text">("template");
+    const [templates, setTemplates] = useState<MetaTemplate[]>([]);
+    const [selectedTemplateName, setSelectedTemplateName] = useState<string>("");
+    const [templatesLoading, setTemplatesLoading] = useState(false);
+    const [placeholdersInput, setPlaceholdersInput] = useState<string>("");
 
+    // Form inputs
     const [contacts, setContacts] = useState("");
     const [message, setMessage] = useState("");
     const [delay, setDelay] = useState([2000]);
@@ -127,15 +141,60 @@ export default function BroadcastPage() {
 
     const { getSocket, joinSession } = useSocket();
 
-    // Load saved API key from localStorage
+    // Fetch Templates from Meta API
+    const fetchTemplates = useCallback(async (keyToUse?: string) => {
+        const key = (keyToUse !== undefined ? keyToUse : metaApiKey).trim();
+        if (!key) return;
+
+        setTemplatesLoading(true);
+        try {
+            const res = await fetch(`/api/broadcast/meta/templates?apiKey=${encodeURIComponent(key)}`);
+            const data = await res.json();
+            if (res.ok && data.success && Array.isArray(data.templates)) {
+                setTemplates(data.templates);
+                if (data.templates.length > 0) {
+                    setSelectedTemplateName((prev) => {
+                        const exists = data.templates.some((t: MetaTemplate) => t.name === prev);
+                        return exists ? prev : data.templates[0].name;
+                    });
+                }
+            } else {
+                console.warn("Could not load templates:", data);
+            }
+        } catch (e) {
+            console.error("Failed to fetch templates", e);
+        } finally {
+            setTemplatesLoading(false);
+        }
+    }, [metaApiKey]);
+
+    // Load saved API key from localStorage and fetch templates on mount
     useEffect(() => {
         try {
             const savedKey = localStorage.getItem("meta_broadcast_api_key");
             if (savedKey) {
                 setMetaApiKey(savedKey);
+                fetchTemplates(savedKey);
+                return;
             }
         } catch {}
-    }, []);
+        fetchTemplates(DEFAULT_META_API_KEY);
+    }, [fetchTemplates]);
+
+    const handleSaveApiKey = () => {
+        if (!metaApiKey.trim()) {
+            return toast.error("Please enter a token before saving");
+        }
+        try {
+            localStorage.setItem("meta_broadcast_api_key", metaApiKey.trim());
+            setKeySaved(true);
+            toast.success("Meta API token saved successfully!");
+            fetchTemplates(metaApiKey.trim());
+            setTimeout(() => setKeySaved(false), 2500);
+        } catch {
+            toast.error("Failed to save token to browser storage");
+        }
+    };
 
     // Socket for progress updates
     useEffect(() => {
@@ -260,71 +319,161 @@ export default function BroadcastPage() {
         }
     };
 
-    // Meta WhatsApp Cloud API Broadcast (works with or without active session!)
+    // Meta WhatsApp Cloud API Broadcast (works with Templates or Text!)
     const handleMetaSend = async () => {
         if (!metaApiKey.trim()) return toast.error("Please enter your Meta API Key");
-        if (!message.trim()) return toast.error("Message cannot be empty");
 
-        // Clean phone numbers: remove domain, symbols, whitespace
-        const cleanRecipients = contacts
-            .split(/[\n,]+/)
-            .map((s) => s.replace(/@.*$/, "").replace(/[^0-9]/g, "").trim())
-            .filter((s) => s.length >= 7);
-
-        if (cleanRecipients.length === 0) {
-            return toast.error("No valid recipient phone numbers provided (min 7 digits with country code)");
-        }
-
-        setLoading(true);
-        setBroadcastProgress(null);
-        setMetaResponse(null);
-
-        try {
-            const res = await fetch("/api/broadcast/meta", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    recipients: cleanRecipients,
-                    message: message.trim(),
-                    apiKey: metaApiKey.trim(),
-                    sessionId: sessionId || "meta-api"
-                })
-            });
-
-            const data = await res.json();
-
-            if (res.ok && (data.success || data.status)) {
-                const responseData: MetaBulkResponse = data.data || data;
-                setMetaResponse(responseData);
-                toast.success(
-                    `Meta broadcast queued! ${responseData.accepted || cleanRecipients.length} recipients accepted.`
-                );
-                // Also set synthetic completed progress card
-                setBroadcastProgress({
-                    broadcastId: responseData.broadcastId || "meta-job-" + Date.now(),
-                    status: "completed",
-                    total: cleanRecipients.length,
-                    sent: responseData.accepted ?? cleanRecipients.length,
-                    failed: Math.max(0, cleanRecipients.length - (responseData.accepted ?? cleanRecipients.length)),
-                    progress: 100
-                });
-                fetchHistory();
-            } else {
-                toast.error(data.message || data.error || "Failed to broadcast via Meta API");
+        if (metaMessageType === "template") {
+            if (!selectedTemplateName) {
+                return toast.error("Please select a template to send");
             }
-        } catch (e: any) {
-            console.error("Meta broadcast error:", e);
-            toast.error(e.message || "Network error while connecting to Meta API");
-        } finally {
-            setLoading(false);
+
+            const selectedTemplate = templates.find((t) => t.name === selectedTemplateName);
+
+            // Parse contacts into { to, placeholders }
+            const lines = contacts.split(/[\r\n]+/).map((s) => s.trim()).filter(Boolean);
+            const globalPlaceholders = placeholdersInput.split(",").map((s) => s.trim()).filter(Boolean);
+
+            const recipientsList: { to: string; placeholders: string[] }[] = [];
+            for (const line of lines) {
+                if (line.includes(",")) {
+                    const parts = line.split(",").map((p) => p.trim());
+                    const to = parts[0].replace(/@.*$/, "").replace(/[^0-9]/g, "").trim();
+                    if (to.length >= 7) {
+                        const customPlaceholders = parts.slice(1).filter(Boolean);
+                        recipientsList.push({
+                            to,
+                            placeholders: customPlaceholders.length > 0 ? customPlaceholders : globalPlaceholders
+                        });
+                    }
+                } else {
+                    const to = line.replace(/@.*$/, "").replace(/[^0-9]/g, "").trim();
+                    if (to.length >= 7) {
+                        recipientsList.push({
+                            to,
+                            placeholders: globalPlaceholders
+                        });
+                    }
+                }
+            }
+
+            if (recipientsList.length === 0) {
+                return toast.error("No valid recipient phone numbers provided (min 7 digits with country code)");
+            }
+
+            setLoading(true);
+            setBroadcastProgress(null);
+            setMetaResponse(null);
+
+            try {
+                const res = await fetch("/api/broadcast/meta", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        recipients: recipientsList,
+                        type: "template",
+                        templateName: selectedTemplate?.name || selectedTemplateName,
+                        templateId: selectedTemplate?.id,
+                        language: selectedTemplate?.language || "en",
+                        placeholders: globalPlaceholders,
+                        apiKey: metaApiKey.trim(),
+                        sessionId: sessionId || "meta-api"
+                    })
+                });
+
+                const data = await res.json();
+
+                if (res.ok && (data.success || data.status)) {
+                    const responseData: MetaBulkResponse = data.data || data;
+                    setMetaResponse(responseData);
+                    toast.success(
+                        `Meta template broadcast queued! ${responseData.accepted ?? recipientsList.length} recipients accepted.`
+                    );
+                    setBroadcastProgress({
+                        broadcastId: responseData.broadcastId || "meta-job-" + Date.now(),
+                        status: "completed",
+                        total: recipientsList.length,
+                        sent: responseData.accepted ?? recipientsList.length,
+                        failed: Math.max(0, recipientsList.length - (responseData.accepted ?? recipientsList.length)),
+                        progress: 100
+                    });
+                    fetchHistory();
+                } else {
+                    toast.error(data.message || data.error || "Failed to broadcast template via Meta API");
+                }
+            } catch (e: any) {
+                console.error("Meta template broadcast error:", e);
+                toast.error(e.message || "Network error while connecting to Meta API");
+            } finally {
+                setLoading(false);
+            }
+        } else {
+            // Text broadcast
+            if (!message.trim()) return toast.error("Message cannot be empty");
+
+            const cleanRecipients = contacts
+                .split(/[\n,]+/)
+                .map((s) => s.replace(/@.*$/, "").replace(/[^0-9]/g, "").trim())
+                .filter((s) => s.length >= 7);
+
+            if (cleanRecipients.length === 0) {
+                return toast.error("No valid recipient phone numbers provided (min 7 digits with country code)");
+            }
+
+            setLoading(true);
+            setBroadcastProgress(null);
+            setMetaResponse(null);
+
+            try {
+                const res = await fetch("/api/broadcast/meta", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        recipients: cleanRecipients,
+                        type: "text",
+                        message: message.trim(),
+                        apiKey: metaApiKey.trim(),
+                        sessionId: sessionId || "meta-api"
+                    })
+                });
+
+                const data = await res.json();
+
+                if (res.ok && (data.success || data.status)) {
+                    const responseData: MetaBulkResponse = data.data || data;
+                    setMetaResponse(responseData);
+                    toast.success(
+                        `Meta broadcast queued! ${responseData.accepted || cleanRecipients.length} recipients accepted.`
+                    );
+                    setBroadcastProgress({
+                        broadcastId: responseData.broadcastId || "meta-job-" + Date.now(),
+                        status: "completed",
+                        total: cleanRecipients.length,
+                        sent: responseData.accepted ?? cleanRecipients.length,
+                        failed: Math.max(0, cleanRecipients.length - (responseData.accepted ?? cleanRecipients.length)),
+                        progress: 100
+                    });
+                    fetchHistory();
+                } else {
+                    toast.error(data.message || data.error || "Failed to broadcast via Meta API");
+                }
+            } catch (e: any) {
+                console.error("Meta broadcast error:", e);
+                toast.error(e.message || "Network error while connecting to Meta API");
+            } finally {
+                setLoading(false);
+            }
         }
     };
 
+    // Calculate recipient count
     const recipientNumbers = contacts
-        .split(/[\n,]+/)
-        .map((s) => s.trim())
+        .split(/[\r\n]+/)
+        .map((s) => s.split(",")[0].trim())
         .filter(Boolean);
     const recipientCount = recipientNumbers.length;
+
+    const selectedTemplate = templates.find((t) => t.name === selectedTemplateName) || null;
 
     const formatJid = (jid: string) => {
         if (!jid) return "-";
@@ -426,7 +575,7 @@ export default function BroadcastPage() {
                             </div>
                             <p className="text-xs text-muted-foreground">
                                 {provider === "meta"
-                                    ? "Dispatches high-volume messages via official Meta Cloud API with instant queuing. No session required."
+                                    ? "Dispatches high-volume messages via official Meta Cloud API with templates or text. No local session required."
                                     : "Sends sequentially via your connected WhatsApp Web device with anti-ban delay."}
                             </p>
                         </div>
@@ -472,7 +621,7 @@ export default function BroadcastPage() {
                                     )}
                                 </CardTitle>
                                 <span className="text-[11px] font-mono text-muted-foreground flex items-center gap-1">
-                                    https://whatsapp.airepro.in/api/v1/messages/bulk
+                                    https://whatsapp.airepro.in/api/v1/messages/bulk-template
                                     <ExternalLink className="h-3 w-3" />
                                 </span>
                             </div>
@@ -529,6 +678,7 @@ export default function BroadcastPage() {
                                                 localStorage.setItem("meta_broadcast_api_key", DEFAULT_META_API_KEY);
                                             } catch {}
                                             setKeySaved(false);
+                                            fetchTemplates(DEFAULT_META_API_KEY);
                                             toast.success("Reset to default Airepro API key");
                                         }}
                                         className="text-xs whitespace-nowrap"
@@ -561,16 +711,24 @@ export default function BroadcastPage() {
                                     </Badge>
                                 </div>
                                 <CardDescription>
-                                    Enter recipient phone numbers separated by comma or new line.
+                                    {provider === "meta" && metaMessageType === "template"
+                                        ? "Enter numbers (one per line). Optionally include custom placeholders: 919876543210, val1, val2"
+                                        : "Enter recipient phone numbers separated by comma or new line."}
                                 </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="space-y-2">
                                     <Label>
-                                        Target Numbers (e.g. 628123456789, 628123235268)
+                                        {provider === "meta" && metaMessageType === "template"
+                                            ? "Target Numbers (e.g. 919010974531 or 919010974531, 482910, 10)"
+                                            : "Target Numbers (e.g. 919010974531, 918125235267)"}
                                     </Label>
                                     <Textarea
-                                        placeholder={"628123456789\n628123235268"}
+                                        placeholder={
+                                            provider === "meta" && metaMessageType === "template"
+                                                ? "919010974531\n918125235267, 482910, 10"
+                                                : "919010974531\n918125235267"
+                                        }
                                         className="min-h-[220px] font-mono text-sm"
                                         value={contacts}
                                         onChange={(e) => setContacts(e.target.value)}
@@ -586,33 +744,174 @@ export default function BroadcastPage() {
                             </CardContent>
                         </Card>
 
-                        {/* Message Card */}
+                        {/* Message / Template Card */}
                         <Card>
                             <CardHeader>
-                                <CardTitle>Message Content</CardTitle>
-                                <CardDescription>Compose the broadcast text message.</CardDescription>
+                                <div className="flex items-center justify-between">
+                                    <CardTitle>
+                                        {provider === "meta" && metaMessageType === "template"
+                                            ? "Template Selection"
+                                            : "Message Content"}
+                                    </CardTitle>
+                                    {provider === "meta" && (
+                                        <div className="flex items-center gap-1 bg-muted p-0.5 rounded-lg text-xs">
+                                            <button
+                                                type="button"
+                                                onClick={() => setMetaMessageType("template")}
+                                                className={`px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1 ${
+                                                    metaMessageType === "template"
+                                                        ? "bg-background text-foreground shadow-xs font-semibold"
+                                                        : "text-muted-foreground hover:text-foreground"
+                                                }`}
+                                            >
+                                                <Layers className="h-3 w-3 text-emerald-500" />
+                                                Template
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setMetaMessageType("text")}
+                                                className={`px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1 ${
+                                                    metaMessageType === "text"
+                                                        ? "bg-background text-foreground shadow-xs font-semibold"
+                                                        : "text-muted-foreground hover:text-foreground"
+                                                }`}
+                                            >
+                                                <FileText className="h-3 w-3 text-blue-500" />
+                                                Raw Text
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                <CardDescription>
+                                    {provider === "meta" && metaMessageType === "template"
+                                        ? "Choose a verified Meta WhatsApp template and configure variables."
+                                        : "Compose your broadcast message."}
+                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
-                                <div className="space-y-2">
-                                    <Label>Message</Label>
-                                    <Textarea
-                                        placeholder="Type your broadcast message here..."
-                                        className="min-h-[140px]"
-                                        value={message}
-                                        onChange={(e) => setMessage(e.target.value)}
-                                        disabled={loading}
-                                    />
-                                </div>
+                                {provider === "meta" && metaMessageType === "template" ? (
+                                    /* Meta Template Mode */
+                                    <div className="space-y-3">
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <Label className="text-xs font-semibold">Select WhatsApp Template</Label>
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => fetchTemplates()}
+                                                    disabled={templatesLoading}
+                                                    className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                                                    title="Refresh templates from Meta server"
+                                                >
+                                                    <RefreshCw className={`h-3 w-3 mr-1 ${templatesLoading ? "animate-spin" : ""}`} />
+                                                    Refresh
+                                                </Button>
+                                            </div>
 
-                                {provider === "meta" ? (
-                                    /* Meta API Action Area */
-                                    <div className="space-y-3 pt-2">
+                                            {templatesLoading && templates.length === 0 ? (
+                                                <div className="flex items-center justify-center py-6 border rounded-lg bg-muted/20 text-xs text-muted-foreground">
+                                                    <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                                                    Loading templates from Meta...
+                                                </div>
+                                            ) : templates.length === 0 ? (
+                                                <div className="p-3 border border-amber-500/30 bg-amber-500/10 rounded-lg text-xs space-y-2">
+                                                    <p className="text-amber-700 dark:text-amber-300 font-medium">
+                                                        No templates found or could not connect to server.
+                                                    </p>
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() => fetchTemplates()}
+                                                        className="h-7 text-xs"
+                                                    >
+                                                        Retry Fetching Templates
+                                                    </Button>
+                                                </div>
+                                            ) : (
+                                                <Select
+                                                    value={selectedTemplateName}
+                                                    onValueChange={(val) => setSelectedTemplateName(val)}
+                                                >
+                                                    <SelectTrigger className="w-full text-xs h-10 border-emerald-500/30">
+                                                        <SelectValue placeholder="Choose a template..." />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {templates.map((tpl) => (
+                                                            <SelectItem key={tpl.name} value={tpl.name} className="text-xs">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="font-semibold">{tpl.name}</span>
+                                                                    {tpl.category && (
+                                                                        <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground font-mono">
+                                                                            {tpl.category}
+                                                                        </span>
+                                                                    )}
+                                                                    {tpl.language && (
+                                                                        <span className="text-[10px] text-muted-foreground font-mono">
+                                                                            ({tpl.language})
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            )}
+                                        </div>
+
+                                        {/* Selected Template Details */}
+                                        {selectedTemplate && (
+                                            <div className="p-3 rounded-lg border bg-muted/20 space-y-2.5 text-xs">
+                                                <div className="flex items-center justify-between flex-wrap gap-1">
+                                                    <span className="font-bold text-foreground text-sm flex items-center gap-1.5">
+                                                        <Sparkles className="h-4 w-4 text-emerald-500" />
+                                                        {selectedTemplate.name}
+                                                    </span>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 bg-emerald-500/10 text-[10px]">
+                                                            {selectedTemplate.status || "APPROVED"}
+                                                        </Badge>
+                                                        {selectedTemplate.category && (
+                                                            <Badge variant="secondary" className="text-[10px]">
+                                                                {selectedTemplate.category}
+                                                            </Badge>
+                                                        )}
+                                                        <Badge variant="outline" className="text-[10px]">
+                                                            {selectedTemplate.language || "en"}
+                                                        </Badge>
+                                                    </div>
+                                                </div>
+
+                                                {selectedTemplate.body && (
+                                                    <div className="p-2.5 rounded-md bg-background border text-xs text-foreground/90 font-sans leading-relaxed whitespace-pre-wrap">
+                                                        {selectedTemplate.body}
+                                                    </div>
+                                                )}
+
+                                                <div className="space-y-1.5 pt-1">
+                                                    <Label className="text-[11px] font-semibold text-muted-foreground">
+                                                        Default Placeholders / Variables (Optional)
+                                                    </Label>
+                                                    <Input
+                                                        placeholder="e.g. 482910, 10"
+                                                        value={placeholdersInput}
+                                                        onChange={(e) => setPlaceholdersInput(e.target.value)}
+                                                        className="text-xs font-mono h-8"
+                                                    />
+                                                    <p className="text-[10px] text-muted-foreground">
+                                                        Fills <code className="font-mono font-semibold">{"{{1}}"}</code>, <code className="font-mono font-semibold">{"{{2}}"}</code> etc. in template body. You can also specify per recipient in the left box.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        )}
+
                                         <div className="p-3 rounded-lg border border-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-950/20 text-xs space-y-1">
                                             <div className="font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                                                <Zap className="h-4 w-4" /> Direct Meta Bulk Queue
+                                                <Zap className="h-4 w-4" /> Meta Bulk Template Dispatcher
                                             </div>
                                             <p className="text-muted-foreground">
-                                                Sends directly via <code className="font-mono">https://whatsapp.airepro.in/api/v1/messages/bulk</code>. No local session required.
+                                                Dispatches via <code className="font-mono">/api/v1/messages/bulk-template</code>. No session needed.
                                             </p>
                                         </div>
 
@@ -622,7 +921,7 @@ export default function BroadcastPage() {
                                             disabled={
                                                 loading ||
                                                 recipientCount === 0 ||
-                                                !message.trim() ||
+                                                !selectedTemplateName ||
                                                 !metaApiKey.trim()
                                             }
                                         >
@@ -631,52 +930,98 @@ export default function BroadcastPage() {
                                             ) : (
                                                 <Sparkles className="mr-2 h-4 w-4" />
                                             )}
-                                            {loading ? "Queueing via Meta API..." : "Broadcast via Meta API"}
+                                            {loading ? "Queueing Template Messages..." : "Broadcast Template via Meta API"}
                                         </Button>
                                     </div>
                                 ) : (
-                                    /* Standard Session Action Area */
-                                    <div className="space-y-3 pt-2">
+                                    /* Text / Session Message Area */
+                                    <div className="space-y-3">
                                         <div className="space-y-2">
-                                            <Label>Delay: {(delay[0] / 1000).toFixed(1)}s</Label>
-                                            <Slider
-                                                defaultValue={[2000]}
-                                                min={1000}
-                                                max={15000}
-                                                step={500}
-                                                value={delay}
-                                                onValueChange={setDelay}
+                                            <Label>Message Body</Label>
+                                            <Textarea
+                                                placeholder="Type your broadcast message here..."
+                                                className="min-h-[140px]"
+                                                value={message}
+                                                onChange={(e) => setMessage(e.target.value)}
                                                 disabled={loading}
                                             />
-                                            <p className="text-xs text-muted-foreground">
-                                                Delay antar pesan (+ random) untuk mengurangi risiko ban.
-                                            </p>
                                         </div>
 
-                                        <div className="flex flex-col gap-2 pt-2">
-                                            <Button
-                                                className="w-full"
-                                                onClick={handleSessionSend}
-                                                disabled={loading || recipientCount === 0 || !message.trim()}
-                                            >
-                                                {loading ? (
-                                                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                                                ) : (
-                                                    <Send className="mr-2 h-4 w-4" />
-                                                )}
-                                                {loading ? "Broadcasting..." : "Start Broadcast (Session)"}
-                                            </Button>
+                                        {provider === "meta" ? (
+                                            /* Meta API Text Action */
+                                            <div className="space-y-3 pt-2">
+                                                <div className="p-3 rounded-lg border border-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-950/20 text-xs space-y-1">
+                                                    <div className="font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                                                        <Zap className="h-4 w-4" /> Direct Meta Bulk Queue
+                                                    </div>
+                                                    <p className="text-muted-foreground">
+                                                        Sends directly via <code className="font-mono">https://whatsapp.airepro.in/api/v1/messages/bulk</code>.
+                                                    </p>
+                                                </div>
 
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                className="w-full text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 border-emerald-500/30"
-                                                onClick={() => setProvider("meta")}
-                                            >
-                                                <Sparkles className="mr-2 h-4 w-4" />
-                                                Use Meta API Instead
-                                            </Button>
-                                        </div>
+                                                <Button
+                                                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold h-10 shadow-sm"
+                                                    onClick={handleMetaSend}
+                                                    disabled={
+                                                        loading ||
+                                                        recipientCount === 0 ||
+                                                        !message.trim() ||
+                                                        !metaApiKey.trim()
+                                                    }
+                                                >
+                                                    {loading ? (
+                                                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                        <Sparkles className="mr-2 h-4 w-4" />
+                                                    )}
+                                                    {loading ? "Queueing via Meta API..." : "Broadcast via Meta API"}
+                                                </Button>
+                                            </div>
+                                        ) : (
+                                            /* Standard Session Action Area */
+                                            <div className="space-y-3 pt-2">
+                                                <div className="space-y-2">
+                                                    <Label>Delay: {(delay[0] / 1000).toFixed(1)}s</Label>
+                                                    <Slider
+                                                        defaultValue={[2000]}
+                                                        min={1000}
+                                                        max={15000}
+                                                        step={500}
+                                                        value={delay}
+                                                        onValueChange={setDelay}
+                                                        disabled={loading}
+                                                    />
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Delay between messages (+ random) to prevent ban.
+                                                    </p>
+                                                </div>
+
+                                                <div className="flex flex-col gap-2 pt-2">
+                                                    <Button
+                                                        className="w-full"
+                                                        onClick={handleSessionSend}
+                                                        disabled={loading || recipientCount === 0 || !message.trim()}
+                                                    >
+                                                        {loading ? (
+                                                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                                                        ) : (
+                                                            <Send className="mr-2 h-4 w-4" />
+                                                        )}
+                                                        {loading ? "Broadcasting..." : "Start Broadcast (Session)"}
+                                                    </Button>
+
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        className="w-full text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 border-emerald-500/30"
+                                                        onClick={() => setProvider("meta")}
+                                                    >
+                                                        <Sparkles className="mr-2 h-4 w-4" />
+                                                        Use Meta API Instead
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </CardContent>
@@ -795,7 +1140,7 @@ export default function BroadcastPage() {
                                         <span className="text-muted-foreground">Progress</span>
                                         <span className="font-mono font-medium">
                                             {broadcastProgress.sent + broadcastProgress.failed} / {broadcastProgress.total} (
-                                            {broadcastProgress.progress || 0}%)
+                                                {broadcastProgress.progress || 0}%)
                                         </span>
                                     </div>
                                     <Progress value={broadcastProgress.progress || 0} className="h-3" />
@@ -876,7 +1221,7 @@ export default function BroadcastPage() {
                             </div>
                         ) : history.length === 0 ? (
                             <div className="text-center py-8 text-muted-foreground">
-                                <p className="text-sm">Belum ada broadcast.</p>
+                                <p className="text-sm">No broadcasts yet.</p>
                             </div>
                         ) : (
                             <div className="space-y-2">
@@ -902,7 +1247,7 @@ export default function BroadcastPage() {
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center gap-2">
                                                 <p className="text-sm font-medium truncate">{log.message}</p>
-                                                {log.message.startsWith("[Meta API]") && (
+                                                {log.message.includes("Meta") && (
                                                     <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-500/30">
                                                         Meta API
                                                     </Badge>
